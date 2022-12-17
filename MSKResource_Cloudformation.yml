@@ -463,6 +463,8 @@ Resources:
         - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
         - arn:aws:iam::aws:policy/AmazonS3FullAccess
         - arn:aws:iam::aws:policy/AWSCertificateManagerPrivateCAFullAccess
+        - arn:aws:iam::aws:policy/AmazonPrometheusQueryAccess
+        - arn:aws:iam::aws:policy/AmazonPrometheusRemoteWriteAccess
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties: 
