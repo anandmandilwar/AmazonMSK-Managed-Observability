@@ -154,12 +154,7 @@ Resources:
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       SubnetId: !Ref PrivateSubnetMSKThree
-#===
-#  MSKVPCStack:
-#    Type: AWS::CloudFormation::Stack
-#    Properties:
-#      TemplateURL: "https://aws-streaming-artifacts.s3.amazonaws.com/msk-lab-resources/MSKLabs/MSKPrivateVPCOnly.yml"
-#===
+
   KafkaClientInstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -187,6 +182,17 @@ Resources:
         FromPort: 3900
         ToPort: 3900
         CidrIp: 10.0.0.0/24
+
+  KafkaClientIngressSSH:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn:  KafkaClientInstanceSecurityGroup
+    Properties:
+      Description:  SSH Access
+      GroupId:  !GetAtt KafkaClientInstanceSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId:  !GetAtt PrometheusServerSecurityGroup.GroupId
 
   PrometheusServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -246,6 +252,17 @@ Resources:
       ToPort: 9092
       SourceSecurityGroupId:  !GetAtt KafkaClientInstanceSecurityGroup.GroupId
    
+  KafkaClusterSGIngressIAMAuth:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: KafkaClusterSecurityGroup
+    Properties:
+      Description:  IAM Authentication Kafka
+      GroupId:  !GetAtt KafkaClusterSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 9098
+      ToPort: 9098
+      SourceSecurityGroupId:  !GetAtt KafkaClientInstanceSecurityGroup.GroupId
+
   KafkaClusterSGIngressZookeeper:
     Type: AWS::EC2::SecurityGroupIngress
     DependsOn: KafkaClusterSecurityGroup
@@ -286,7 +303,6 @@ Resources:
       Description: "Cloud9 EC2 environment"
       InstanceType: t3.medium
       Name: !Sub "${AWS::StackName}-Cloud9EC2Bastion"
-      #SubnetId: !GetAtt MSKVPCStack.Outputs.PublicSubnetOne
       SubnetId: !Ref PublicSubnetOne
       Tags: 
         - Key: 'Purpose'
@@ -297,7 +313,7 @@ Resources:
     Properties:
       InstanceType: t3.medium
       KeyName: !Ref 'KeyName'
-      IamInstanceProfile: !Ref EC2InstanceProfile
+      IamInstanceProfile: !Ref KafkaClientProfile
       AvailabilityZone: 
         Fn::Select:
          - 0
@@ -414,12 +430,24 @@ Resources:
             su -c "echo 'export PS1=\"KafkaClientEC2Instance1 [\u@\h \W\\]$ \"' >> /home/ec2-user/.bash_profile" -s /bin/sh ec2-user
             su -c "echo '[ -f /tmp/kafka/setup_env ] && . /tmp/kafka/setup_env' >> /home/ec2-user/.bash_profile" -s /bin/sh ec2-user
 
+            # Configure client.properties - Needed for IAM Authentication mode of Amazon MSK
+            su -c "cp /usr/lib/jvm/jre-1.8.0-openjdk-1.8.0.342.b07-1.amzn2.0.1.x86_64/lib/security/cacerts /tmp/kafka.client.truststore.jks" -s /bin/sh ec2-user
+            su -c "echo ssl.truststore.location=/tmp/kafka.client.truststore.jks >> /home/ec2-user/kafka/config/client.properties" -s /bin/sh ec2-user
+            su -c "echo security.protocol=SASL_SSL >> /home/ec2-user/kafka/config/client.properties" -s /bin/sh ec2-user
+            su -c "echo sasl.mechanism=AWS_MSK_IAM >> /home/ec2-user/kafka/config/client.properties" -s /bin/sh ec2-user
+            su -c "echo sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required; >> /home/ec2-user/kafka/config/client.properties" -s /bin/sh ec2-user
+            su -c "echo sasl.client.callback.handler.class=software.amazon.msk.auth.iam.IAMClientCallbackHandler >> /home/ec2-user/kafka/config/client.properties" -s /bin/sh ec2-user
+
+            # Download jar file for MSK IAM Authentication
+            cd /home/ec2-user/kafka/libs
+            su -c "wget https://github.com/aws/aws-msk-iam-auth/releases/download/v1.1.5/aws-msk-iam-auth-1.1.5-all.jar" -s /bin/sh ec2-user
+
   PrometheusEC2Instance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: t3.medium
       KeyName: !Ref 'KeyName'
-      IamInstanceProfile: !Ref EC2InstanceProfile
+      IamInstanceProfile: !Ref PrometheusProfile
       AvailabilityZone: 
         Fn::Select:
          - 0
@@ -446,7 +474,7 @@ Resources:
             usermod -a -G docker ec2-user
 
 
-  EC2Role: 
+  PrometheusRole: 
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument: 
@@ -459,21 +487,69 @@ Resources:
             Action: 'sts:AssumeRole'
       Path: "/"
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
-        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
-        - arn:aws:iam::aws:policy/AmazonS3FullAccess
-        - arn:aws:iam::aws:policy/AWSCertificateManagerPrivateCAFullAccess
+#        - arn:aws:iam::aws:policy/AmazonMSKFullAccess
+#        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+#        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+#        - arn:aws:iam::aws:policy/AWSCertificateManagerPrivateCAFullAccess
         - arn:aws:iam::aws:policy/AmazonPrometheusQueryAccess
         - arn:aws:iam::aws:policy/AmazonPrometheusRemoteWriteAccess
-  EC2InstanceProfile:
+  PrometheusProfile:
     Type: AWS::IAM::InstanceProfile
     Properties: 
       InstanceProfileName: !Join
                             - '-'
-                            - - 'EC2MMMSKCFProfile'
+                            - - 'Ec2MSSKCFProfile'
                               - !Ref 'AWS::StackName'
       Roles:
-        - !Ref EC2Role
+        - !Ref PrometheusRole
+
+
+  KafkaClientRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: Role to access MSK Using IAM
+      RoleName: KafkaClientRole
+      
+  # Created this policy in AmazonMSK Cloudformation Template    
+  #MSKAccessusingIAMManagedPolicy:
+  #  Type: AWS::IAM::ManagedPolicy
+  #  Properties: 
+  #    Description: Managed Policy to access MSK using IAM attached to KafkaClientRole
+  #    ManagedPolicyName: PolicyToAccessMSKUsingIAM
+  #    Path: /
+  #    PolicyDocument: 
+  #      Version: "2012-10-17"
+  #      Statement:
+  #        - Effect: Allow
+  #          Action:
+  #            - kafka:Get*
+  #            - kafka:Describe*
+  #            - kafka:List*
+  #          Resource: "*"
+  #    Roles: 
+  #      - !Ref KafkaClientRole
+
+  KafkaClientProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      InstanceProfileName: !Join
+                            - '-'
+                            - - 'KafkaClient'
+                              - !Ref 'AWS::StackName'
+      Roles:
+        - !Ref KafkaClientRole        
+
+  
+
 
 #========
 Outputs:
@@ -531,4 +607,10 @@ Outputs:
     Value: !Sub http://${KafkaClientEC2Instance.PrivateDnsName}:8081
     Export:
       Name: !Sub "${AWS::StackName}-SchemaRegistryUrl"
+  KafkaClientRoleArn:
+    Description: Arn of the Role attached to Kafka Client
+    Value: !GetAtt KafkaClientRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-KafkaClientRoleArn"
+
   

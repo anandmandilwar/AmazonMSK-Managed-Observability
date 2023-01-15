@@ -14,10 +14,19 @@ Parameters:
     Type: String
     Default: "ResourceForMSKDemo"
 
+  MSKClusterName:
+    Description: Name of the Amazon MSK Cluster
+    Type: String
+    Default: "DemoMSK"
+
   VpcId:
     Description: The ID of the VPC for security group
     Type: String
     Default: ""
+  
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
 
   
   kafkaVersion:
@@ -73,12 +82,11 @@ Resources:
     Properties:
       LogGroupName: "DemoMSKCWLog"
       RetentionInDays: 7
-      
   
   MSKClusterCustomConfig:
     Type: AWS::MSK::Configuration
     Properties: 
-      Name: "TestConfigDemoMSK"
+      Name: "TestConfigDemoMSK1"
       ServerProperties: |
         delete.topic.enable = true 
         log.retention.hours = 8
@@ -94,14 +102,93 @@ Resources:
         socket.request.max.bytes = 104857600
         socket.send.buffer.bytes = 102400
         unclean.leader.election.enable = true
+#===
+  MSKIAMManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties: 
+      Description: Managed Policy to access MSK using IAM attached to KafkaClientRole
+      ManagedPolicyName: MSKConnectAuthentication
+      Path: /
+      PolicyDocument: 
+        Version: '2012-10-17'
+        Statement:
+        # At Cluster level permission
+        - Effect: Allow
+          Action:
+          - kafka:Get*
+          - kafka:Describe*
+          - kafka:List*
+          - kafka:Tag*
+          Resource:  
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:kafka:'
+                - !Ref 'AWS::Region'
+                - ':'
+                - !Ref 'AWS::AccountId'
+                - ':cluster/'
+                - '*'        
+        # At Specific Cluster level permission
+        - Effect: Allow
+          Action:
+          - kafka-cluster:Connect
+          - kafka-cluster:AlterCluster
+          - kafka-cluster:DescribeCluster
+          - kafka-cluster:DescribeClusterDynamicConfiguration
+          Resource:  
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:kafka:'
+                - !Ref 'AWS::Region'
+                - ':'
+                - !Ref 'AWS::AccountId'
+                - ':cluster/'
+                - !Ref MSKClusterName # ARN of the Cluster
+        # At Topic level permission
+        - Effect: Allow
+          Action:
+          - kafka-cluster:*Topic*
+          - kafka-cluster:WriteData
+          - kafka-cluster:ReadData
+          - kafka-cluster:Connect
+          Resource: 
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:kafka:'
+                - !Ref 'AWS::Region'
+                - ':'
+                - !Ref 'AWS::AccountId'
+                - ':topic/'
+                - !Ref MSKClusterName
+                - '/*/*'
+        # At group level permission
+        - Effect: Allow
+          Action:
+          - kafka-cluster:AlterGroup
+          - kafka-cluster:DescribeGroup
+          - kafka-cluster:Connect
+          - kafka-cluster:DescribeTopic
+          - kafka-cluster:ReadData
+          Resource: 
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:kafka:'
+                - !Ref 'AWS::Region'
+                - ':'
+                - !Ref 'AWS::AccountId'
+                - ':group/'
+                - !Ref MSKClusterName
+                - '/*/*'
+      Roles: 
+        - "KafkaClientRole"
 
   MSKCluster:
     Type: 'AWS::MSK::Cluster'
     Properties:
-      ClusterName:
-        !Sub
-          - 'DemoMSKCluster-${RandomGUID}'
-          - { RandomGUID: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
+      ClusterName: !Ref MSKClusterName
+      #  !Sub
+      #    - 'DemoMSKCluster-${RandomGUID}'
+      #    - { RandomGUID: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId ]]]] }
       KafkaVersion: !Ref kafkaVersion
       ConfigurationInfo:
         Arn: !Ref MSKClusterCustomConfig
@@ -131,10 +218,13 @@ Resources:
             VolumeSize: 100
       ClientAuthentication:
         Unauthenticated:
-          Enabled: true
+          Enabled: false
+        Sasl:
+          Iam:
+            Enabled: True  
       EncryptionInfo:
         EncryptionInTransit:
-          ClientBroker: "TLS_PLAINTEXT" 
+          ClientBroker: "TLS" ##"TLS_PLAINTEXT" 
           InCluster: true
       EnhancedMonitoring: "PER_TOPIC_PER_PARTITION"
       OpenMonitoring:
